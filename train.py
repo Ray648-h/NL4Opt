@@ -8,7 +8,8 @@ import numpy as np
 import tqdm
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AdamW, get_linear_schedule_with_warmup, Adafactor
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup, Adafactor
+from torch.optim import AdamW
 from rouge import Rouge
 from model import TextMappingModel
 from config import Config

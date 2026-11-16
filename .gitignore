@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Dataset (not committed; download from https://github.com/nl4opt/nl4opt-competition -> generation_task)
+data/
+
+# Model cache (re-downloadable)
+bert/
+
+# Training checkpoints (large)
+output/

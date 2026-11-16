@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from transformers import AutoModelForSeq2SeqLM
-from transformers import BeamSearchScorer, LogitsProcessorList, NoBadWordsLogitsProcessor
+from transformers import LogitsProcessorList, NoBadWordsLogitsProcessor
 from generation_bart import CopyConditionalGeneration
 from constants import *
 
@@ -43,8 +43,11 @@ class TextMappingModel(nn.Module):
         print('Loading pre-trained LM {}'.format(name))
 
         if self.use_copy:
+            # `eager` attention is required: the copy mechanism reads cross-attentions in
+            # `CopyConditionalGeneration.forward`, and the default SDPA backend does not
+            # support `output_attentions=True`.
             self.bert = CopyConditionalGeneration.from_pretrained(name, cache_dir=cache_dir,
-                                                                         output_attentions=True)
+                                                                  attn_implementation="eager")
             self.bert._k = self._k
         else:
             self.bert = AutoModelForSeq2SeqLM.from_pretrained(name, cache_dir=cache_dir)
@@ -97,41 +100,34 @@ class TextMappingModel(nn.Module):
 
     def generate(self, batch, num_beams, decoding_length, tokenizer, decoder_token_masks=None):
         '''
-        From https://huggingface.co/transformers/main_classes/model.html?highlight=beamsearchscorer
+        Migrated from the removed internal `greedy_search`/`beam_search` methods (and the
+        removed `BeamSearchScorer` class) to the public `model.generate()` API
+        (transformers >= 5.x). The copy mechanism lives inside
+        `CopyConditionalGeneration.forward`, so it still applies during generation as long as
+        (1) cross-attentions are computed (forced inside `CopyConditionalGeneration.forward`)
+        and (2) the encoder input ids are available on every decoder step (`generate()` passes
+        `input_ids=None` once the encoder outputs are cached, so we stash them in
+        `self.bert._cache_input_ids`).
         '''
 
         # list of bad words to prevent the model from predicting these outputs
         bad_words = [[tokenizer.sep_token_id], [tokenizer.pad_token_id]]
-        logits_processor = NoBadWordsLogitsProcessor(bad_words_ids=bad_words, eos_token_id=tokenizer.eos_token_id)
+        logits_processor = LogitsProcessorList(
+            [NoBadWordsLogitsProcessor(bad_words_ids=bad_words, eos_token_id=tokenizer.eos_token_id)]
+        )
 
-        # seems that this is required if our model is a encoder-decoder architecture.
-        model_kwargs = {
-            "encoder_outputs": self.bert.get_encoder()(batch.input_ids.repeat_interleave(num_beams, dim=0),
-                                                       batch.attention_masks.repeat_interleave(num_beams, dim=0),
-                                                       return_dict=True),
-        }
-        # huggingface beamsearch workaround
-        self.bert._cache_input_ids = batch.input_ids
+        # the copy mechanism needs the encoder input ids on every decoder step. `generate()`
+        # expands the batch by `num_beams`, so expand the cached ids to match.
+        self.bert._cache_input_ids = batch.input_ids.repeat_interleave(num_beams, dim=0)
 
-        # create token for start decoding.
-        decoder_input_ids = torch.ones((num_beams * batch.input_ids.size(0), 1), device=self.bert.device, dtype=torch.long)
-        decoder_input_ids = decoder_input_ids * self.bert.config.decoder_start_token_id
-
-        # decoder_input_ids = torch.tensor([self.bert.config.decoder_start_token_id] + batch.decoder_input_chunks[0][0][0], device=self.bert.device, dtype=torch.long)
-        # decoder_input_ids = decoder_input_ids.repeat(num_beams, 1)
-
-        if num_beams == 1:
-            decoded_ids = self.bert.greedy_search(decoder_input_ids, max_length=decoding_length,
-                                    logits_processor=logits_processor, **model_kwargs)
-        else:
-            beam_scorer = BeamSearchScorer(
-            batch_size=batch.input_ids.size(0),
+        decoded_ids = self.bert.generate(
+            batch.input_ids,
+            attention_mask=batch.attention_masks,
             max_length=decoding_length,
             num_beams=num_beams,
-            device=self.bert.device,
-            )
-            decoded_ids = self.bert.beam_search(decoder_input_ids, beam_scorer, max_length=decoding_length,
-                                                logits_processor=logits_processor, **model_kwargs)
+            num_return_sequences=1,
+            logits_processor=logits_processor,
+        )
 
         return decoded_ids
 
@@ -160,7 +156,7 @@ class TextMappingModel(nn.Module):
             decoder_token_masks[:, tokenizer.bos_token_id] = 1
 
 
-            decoded_ids = self.generate(batch, num_beams=1, decoding_length=decoding_length, tokenizer=tokenizer,
+            decoded_ids = self.generate(batch, num_beams=self.num_beams, decoding_length=decoding_length, tokenizer=tokenizer,
                                             decoder_token_masks=decoder_token_masks)
 
             res = {

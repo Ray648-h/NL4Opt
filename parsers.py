@@ -135,6 +135,8 @@ class Parser:
         :param x: any number-like string
         :return: best-effort attempt at converting the string to a number; returns 0 if it could not parse
         """
+        if x is None:
+            return 0.0
         x = x.strip().replace(',', '').strip(';,$')
         # remove extra periods from the end
         x = re.sub('\.+$', '', x)
@@ -287,7 +289,7 @@ class ModelOutputXMLParser(Parser):
 
     def parse_constraint(self, root: ET.Element, entities: dict) -> ConstraintDeclaration:
         const_dir = ''
-        limit = ''
+        limit = 0.0
         const_type = ''
         operator = ''
         variables = OrderedDict()

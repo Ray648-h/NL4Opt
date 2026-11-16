@@ -40,7 +40,10 @@ class CopyConditionalGeneration(BartForConditionalGeneration):
 
         Returns:
         """
-        assert output_attentions or self.model.config.output_attentions, "output_attentions must be true"
+        # The copy mechanism always needs cross-attentions. In transformers >= 5.x the
+        # config default (config.output_attentions) is not honored by the model forward,
+        # and `output_attentions` is no longer a valid generate() flag, so force it here.
+        output_attentions = True
 
         # original outputs
         outputs = self.model(input_ids,
